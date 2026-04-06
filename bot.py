@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-from duckduckgo_search import DDGS  # <--- New Search Library
+from duckduckgo_search import DDGS 
 
 # 1. --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -32,13 +32,30 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 def search_web(query):
     """Searches DuckDuckGo and returns a string of results."""
     try:
+        # The 'with' statement is correct, but we add a timeout and specific parameters
         with DDGS() as ddgs:
-            # Get top 5 results
-            results = [r['body'] for r in ddgs.text(query, max_results=5)]
-            return "\n\n".join(results) if results else "No web results found."
+            # We use ddgs.text instead of ddgs.search for better snippet extraction
+            # Added region and safesearch to improve result hit-rate
+            results = ddgs.text(
+                keywords=query, 
+                region='wt-wt', 
+                safesearch='off', 
+                max_results=5
+            )
+            
+            if not results:
+                return "No specific web results found for this query."
+            
+            # Combine Title and Body for better LLM context
+            formatted_results = []
+            for r in results:
+                formatted_results.append(f"Source: {r['title']}\nSnippet: {r['body']}\nURL: {r['href']}")
+            
+            return "\n\n---\n\n".join(formatted_results)
+            
     except Exception as e:
         logging.error(f"Search error: {e}")
-        return "Search service currently unavailable."
+        return "Search service currently unavailable. Please check your internet connection or library version."
 
 # 3. --- FUNCTIONS ---
 
@@ -50,11 +67,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        # STEP 1: Search the web for the user's question
-        # We tell the user we are searching so they don't think it's frozen
-        search_results = search_web(user_text)
+        # IMPROVEMENT: Create a search-optimized query
+        # Instead of searching "Hey bot, can you tell me what the weather is in Tokyo?",
+        # we search "weather in Tokyo"
+        search_query = user_text
+        if len(user_text.split()) > 10:
+            # Simple heuristic: if the prompt is long, it's a conversation, not a query.
+            # In a production app, you'd use the LLM to generate a search query here.
+            search_query = " ".join(user_text.split()[:8]) 
+
+        search_results = search_web(search_query)
         
-        # STEP 2: Create a "Prompt" that combines Search Results + User Question
         augmented_prompt = f"""
         WEB SEARCH RESULTS:
         {search_results}
@@ -62,10 +85,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER QUESTION: 
         {user_text}
         
-        Please answer the user question using the web search results provided above.
+        Please answer the user question using the web search results provided above. 
+        If the results are 'No specific web results found', rely on your internal knowledge but inform the user.
         """
 
-        # STEP 3: Generate response from Gemma 4
         response = model.generate_content(augmented_prompt)
         
         if response.text:
