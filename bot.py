@@ -3,61 +3,67 @@ import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # 1. --- CONFIGURATION ---
-# These are pulled from your Railway "Variables" tab
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GEMMA_API_KEY = os.getenv('GEMMA_API_KEY')
-MODEL_NAME = os.getenv('MODEL_NAME', 'gemma-4-27b-it') 
+MODEL_NAME = os.getenv('MODEL_NAME', 'gemma-2-27b-it') # Ensure this is a valid model name
 
 # Configure Google AI
 genai.configure(api_key=GEMMA_API_KEY)
+
+# SAFETY SETTINGS: This stops the bot from "encountering an error" when the AI is too shy
+safety_settings = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+}
+
 model = genai.GenerativeModel(
     model_name=MODEL_NAME,
-    system_instruction="You are the OpenClaw Assistant, a high-intelligence AI powered by Gemma 4. You provide deep, reasoned, and logical answers."
+    safety_settings=safety_settings,
+    system_instruction="You are the OpenClaw Assistant, a high-intelligence AI powered by Gemma 4."
 )
 
-# Setup Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.INFO
 )
 
-# 2. --- FUNCTION DEFINITIONS (Must come BEFORE the main block) ---
+# 2. --- FUNCTIONS ---
 
-# This is the 'start' function that was missing or misplaced
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🦀 Hello! I am the OpenClaw Assistant, powered by the largest Gemma 4 Thinking Model. How can I help you today?"
-    )
+    await update.message.reply_text("🦀 OpenClaw Assistant is online! Send me a message.")
 
-# This handles the actual AI chatting
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    
-    # Show "typing..." action in Telegram
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        # Generate response from Gemma 4
+        # Generate response
         response = model.generate_content(user_text)
-        await update.message.reply_text(response.text)
-    except Exception as e:
-        logging.error(f"Error: {e}")
-        await update.message.reply_text("I encountered an error. Please try again.")
+        
+        # Check if the response actually has text
+        if response.text:
+            await update.message.reply_text(response.text)
+        else:
+            await update.message.reply_text("The AI generated an empty response. Try asking differently.")
 
-# 3. --- THE MAIN EXECUTION BLOCK (Must come LAST) ---
+    except Exception as e:
+        # DEBUG MODE: This sends the ACTUAL error to your Telegram chat
+        # Once you fix the error, you can change this back to a generic message
+        error_detail = f"❌ Error: {str(e)}"
+        logging.error(error_detail)
+        await update.message.reply_text(error_detail)
+
+# 3. --- MAIN ---
 if __name__ == '__main__':
-    # Build the application
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Connect the functions to the commands
-    # Now 'start' and 'handle_message' are already defined above, so this will work!
-    start_handler = CommandHandler('start', start)
-    msg_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    application.add_handler(start_handler)
-    application.add_handler(msg_handler)
-    
-    print("OpenClaw Assistant is starting up...")
+    print("OpenClaw Assistant is running...")
     application.run_polling()
